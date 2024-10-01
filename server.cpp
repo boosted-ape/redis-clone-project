@@ -13,6 +13,9 @@
 #include <unistd.h>
 #include <vector>
 #include <poll.h>
+#include <string>
+#include <iostream>
+#include <sstream>
 
 using namespace std;
 
@@ -55,6 +58,17 @@ void *writer(void *param)
     pthread_exit(NULL);
 }
 
+std::vector<std::string> tokenize(const std::string& str, char delimiter) {
+    std::vector<std::string> tokens;
+    std::stringstream ss(str);
+    std::string token;
+
+    while (std::getline(ss, token, delimiter)) {
+        tokens.push_back(token);
+    }
+
+    return tokens;
+}
 // Driver Code
 int main()
 {
@@ -82,9 +96,10 @@ int main()
 
     all_sockets.push_back(serverSocket);
     struct pollfd fds[100]; // To hold poll file descriptors
-    int num_clients = 0;
 
-    while (1)
+    printf("hi\n");
+
+    while (true)
     {
         // Prepare the fds array for polling
         for (int i = 0; i < all_sockets.size(); i++)
@@ -118,51 +133,46 @@ int main()
                 else
                 {
                     // Handle data from client
-                    char message[4096];
-                    memset(message, 0, sizeof(message));
-                    ssize_t bytes_received = recv(fds[i].fd, message, sizeof(message), 0);
-                    if (bytes_received <= 0)
+                    string message;
+
+                    uint32_t rcvDataLength;
+                    uint32_t dataLength;
+                    ssize_t bytesReceived = recv(fds[i].fd, &rcvDataLength, sizeof(uint32_t), 0);
+
+                    if (bytesReceived <= 0)
                     {
-                        // Client disconnected
+                        // Client disconnected or error occurred
                         close(fds[i].fd);
                         all_sockets.erase(all_sockets.begin() + i);
-                        i--; // Adjust the index after removal
+                        // Since we erased the element, we should adjust i
+                        i--;      // Adjust the index after removal
+                        continue; // Continue to the next iteration
                     }
-                    else
+
+                    dataLength = ntohl(rcvDataLength);
+
+                    std::vector<uint8_t> rcvBuf;     // Allocate a receive buffer
+                    rcvBuf.resize(dataLength, 0x00); // with the necessary size
+
+                    bytesReceived = recv(fds[i].fd, &(rcvBuf[0]), dataLength, 0);
+                    if (bytesReceived <= 0)
                     {
-                        // Process command
-                        message[bytes_received] = '\0';
-
-                        // Process command
-                        char *command = strtok(message, " ");
-                        char *key = strtok(NULL, " ");
-                        char *val = strtok(NULL, " ");
-
-                        // Check if command is NULL
-                        if (command == NULL)
-                        {
-                            send(fds[i].fd, "Invalid Command", 15, 0);
-                            continue; // Skip to next iteration
-                        }
-
-                        // Command processing
-                        if (strcmp(command, "INSERT") == 0)
-                        {
-                            send(fds[i].fd, "INSERT", strlen("INSERT"), 0);
-                        }
-                        else if (strcmp(command, "GET") == 0)
-                        {
-                            send(fds[i].fd, "GET", strlen("GET"), 0);
-                        }
-                        else if (strcmp(command, "REMOVE") == 0)
-                        {
-                            send(fds[i].fd, "REMOVE", strlen("REMOVE"), 0);
-                        }
-                        else
-                        {
-                            send(fds[i].fd, "Invalid Command", 15, 0);
-                        }
+                        // Client disconnected or error occurred
+                        close(fds[i].fd);
+                        all_sockets.erase(all_sockets.begin() + i);
+                        i--;      // Adjust the index after removal
+                        continue; // Continue to the next iteration
                     }
+
+                    // assign buffered data to a string
+                    message.assign((char *)&(rcvBuf[0]), rcvBuf.size()); // string
+
+
+
+                    uint32_t sendDataLength = htonl(message.size());
+                    // Send data to the socket
+                    send(fds[i].fd, &sendDataLength, sizeof(uint32_t), 0);
+                    send(fds[i].fd, message.c_str(), message.size(), 0);
                 }
             }
         }

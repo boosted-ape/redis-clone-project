@@ -12,7 +12,11 @@
 #include <pthread.h>
 #include <semaphore.h>
 
-// Driver Code
+
+#include <vector>
+#include <string>
+#include <iostream>
+using namespace std;
 
 int main()
 {
@@ -45,28 +49,45 @@ int main()
 
     while (true)
     {
-        char client_request[4096];
-        char server_response[4096];
-        printf("Enter your command> ");
-        scanf("%s", client_request);
+        string client_request;
+        string server_response;
+        cout << "Enter your command> ";
+        getline(cin, client_request);
 
-        if (!strcmp(client_request, "END"))
+        if (!client_request.compare("END"))
         {
             break;
         }
+
+        uint32_t dataLength = htonl(client_request.size());
         // Send data to the socket
-        send(network_socket, client_request,
-             sizeof(client_request), 0);
-        ssize_t bytes_received = recv(network_socket, server_response, sizeof(server_response), 0);
-        if(bytes_received <= 0){
+        send(network_socket, &dataLength, sizeof(uint32_t), 0);
+        send(network_socket, client_request.c_str(),
+             client_request.size(), 0);
+
+        uint32_t rcvDataLength;
+        uint32_t cleanedDataLength;
+        recv(network_socket, &rcvDataLength, sizeof(uint32_t), 0); // Receive the message length
+        cleanedDataLength = ntohl(rcvDataLength);                    // Ensure host system byte order
+
+        std::vector<uint8_t> rcvBuf;     // Allocate a receive buffer
+        rcvBuf.resize(cleanedDataLength, 0x00); // with the necessary size
+
+        recv(network_socket, &(rcvBuf[0]), cleanedDataLength, 0); // Receive the string data
+
+        // assign buffered data to a
+        server_response.assign((char *)&(rcvBuf[0]), rcvBuf.size()); // string
+
+        
+        if (rcvBuf.size() <= 0)
+        {
             break;
         }
-        printf("%s\n",server_response);
+        cout << server_response << '\n';
     }
 
     // Close the connection
     close(network_socket);
-    pthread_exit(NULL);
 
     return 0;
 }
