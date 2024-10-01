@@ -1,147 +1,171 @@
-#include <stdint.h>
+// C program for the Server Side
+
+// inet_addr
+#include <arpa/inet.h>
+
+// For threading, link with lpthread
+#include <pthread.h>
+#include <semaphore.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-#include <errno.h>
-#include <unistd.h>
-#include <arpa/inet.h>
 #include <sys/socket.h>
-#include <netinet/ip.h>
-#include <assert.h>
+#include <unistd.h>
+#include <vector>
+#include <poll.h>
 
-static void msg(const char *msg)
+using namespace std;
+
+// Semaphore variables
+sem_t x, y;
+pthread_t writerthreads[100];
+pthread_t readerthreads[100];
+int readercount = 0;
+
+// Reader Function
+void *reader(void *param)
 {
-    fprintf(stderr, "%s\n", msg);
+    sem_wait(&x);
+    readercount++;
+    if (readercount == 1)
+        sem_wait(&y);
+    sem_post(&x);
+
+    printf("\n%d reader is inside", readercount);
+    sleep(5);
+
+    sem_wait(&x);
+    readercount--;
+    if (readercount == 0)
+        sem_post(&y);
+    sem_post(&x);
+
+    printf("\n%d Reader is leaving", readercount + 1);
+    pthread_exit(NULL);
 }
 
-static void die(const char *msg)
+// Writer Function
+void *writer(void *param)
 {
-    int err = errno;
-    fprintf(stderr, "[%d] %s\n", err, msg);
-    abort();
+    printf("\nWriter is trying to enter");
+    sem_wait(&y);
+    printf("\nWriter has entered");
+    sem_post(&y);
+    printf("\nWriter is leaving");
+    pthread_exit(NULL);
 }
 
-static void do_something(int connfd)
-{
-    char rbuf[64] = {};
-    ssize_t n = read(connfd, rbuf, sizeof(rbuf) - 1);
-    if (n < 0)
-    {
-        msg("read() error");
-        return;
-    }
-    printf("client says: %s\n", rbuf);
-
-    char wbuf[] = "world";
-    write(connfd, wbuf, strlen(wbuf));
-}
-
-static int32_t read_full(int fd, char *buf, size_t n)
-{
-    while (n > 0)
-    {
-        ssize_t rv = read(fd, buf, n);
-        if (rv <= 0)
-        {
-            return -1; // error, or unexpected EOF
-        }
-        assert((size_t)rv <= n);
-        n -= (size_t)rv;
-        buf += rv;
-    }
-    return 0;
-}
-
-static int32_t write_all(int fd, const char *buf, size_t n)
-{
-    while (n > 0)
-    {
-        ssize_t rv = write(fd, buf, n);
-        if (rv <= 0)
-        {
-            return -1; // error
-        }
-        assert((size_t)rv <= n);
-        n -= (size_t)rv;
-        buf += rv;
-    }
-    return 0;
-}
-
-// const
-const size_t k_max_msg = 4096;
-
-static int32_t one_request(int connfd)
-{
-    // 4 byte header, +1 for null terminator
-    char rbuf[4 + k_max_msg + 1];
-    errno = 0;
-    int32_t err = read_full(connfd, rbuf, 4);
-    if (err)
-    {
-        if (errno == 0)
-        {
-            msg("EOF");
-        }
-        else
-        {
-            msg("read() error");
-        }
-        return err;
-    }
-}
-
+// Driver Code
 int main()
 {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0)
-    {
-        die("socket()");
-    }
+    // Initialize variables
+    int serverSocket, newSocket;
+    struct sockaddr_in serverAddr;
+    struct sockaddr_storage serverStorage;
+    socklen_t addr_size;
 
-    // this is needed for most server applications
-    int val = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+    vector<int> all_sockets;
+    sem_init(&x, 0, 1);
+    sem_init(&y, 0, 1);
 
-    // bind
-    struct sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_port = ntohs(1234);
-    addr.sin_addr.s_addr = ntohl(0); // wildcard address 0.0.0.0
-    int rv = bind(fd, (const sockaddr *)&addr, sizeof(addr));
-    if (rv)
-    {
-        die("bind()");
-    }
+    serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(8989);
 
-    // listen
-    rv = listen(fd, SOMAXCONN);
-    if (rv)
-    {
-        die("listen()");
-    }
+    bind(serverSocket, (struct sockaddr *)&serverAddr, sizeof(serverAddr));
 
-    while (true)
+    if (listen(serverSocket, 50) == 0)
+        printf("Listening\n");
+    else
+        printf("Error\n");
+
+    all_sockets.push_back(serverSocket);
+    struct pollfd fds[100]; // To hold poll file descriptors
+    int num_clients = 0;
+
+    while (1)
     {
-        // accept
-        struct sockaddr_in client_addr = {};
-        socklen_t socklen = sizeof(client_addr);
-        int connfd = accept(fd, (struct sockaddr *)&client_addr, &socklen);
-        if (connfd < 0)
+        // Prepare the fds array for polling
+        for (int i = 0; i < all_sockets.size(); i++)
         {
-            continue; // error
+            fds[i].fd = all_sockets[i];
+            fds[i].events = POLLIN;
         }
 
-        // only serves one client connection at once
-        while (true)
+        int poll_count = poll(fds, all_sockets.size(), -1);
+        if (poll_count < 0)
         {
-            int32_t err = one_request(connfd);
-            if (err)
+            perror("poll error");
+            continue;
+        }
+        else if (poll_count == 0)
+        {
+            continue;
+        }
+
+        for (int i = 0; i < all_sockets.size(); i++)
+        {
+            if (fds[i].revents & POLLIN)
             {
-                break;
+                if (fds[i].fd == serverSocket)
+                {
+                    // Accept new connection
+                    addr_size = sizeof(serverStorage);
+                    newSocket = accept(serverSocket, (struct sockaddr *)&serverStorage, &addr_size);
+                    all_sockets.push_back(newSocket);
+                }
+                else
+                {
+                    // Handle data from client
+                    char message[4096];
+                    memset(message, 0, sizeof(message));
+                    ssize_t bytes_received = recv(fds[i].fd, message, sizeof(message), 0);
+                    if (bytes_received <= 0)
+                    {
+                        // Client disconnected
+                        close(fds[i].fd);
+                        all_sockets.erase(all_sockets.begin() + i);
+                        i--; // Adjust the index after removal
+                    }
+                    else
+                    {
+                        // Process command
+                        message[bytes_received] = '\0';
+
+                        // Process command
+                        char *command = strtok(message, " ");
+                        char *key = strtok(NULL, " ");
+                        char *val = strtok(NULL, " ");
+
+                        // Check if command is NULL
+                        if (command == NULL)
+                        {
+                            send(fds[i].fd, "Invalid Command", 15, 0);
+                            continue; // Skip to next iteration
+                        }
+
+                        // Command processing
+                        if (strcmp(command, "INSERT") == 0)
+                        {
+                            send(fds[i].fd, "INSERT", strlen("INSERT"), 0);
+                        }
+                        else if (strcmp(command, "GET") == 0)
+                        {
+                            send(fds[i].fd, "GET", strlen("GET"), 0);
+                        }
+                        else if (strcmp(command, "REMOVE") == 0)
+                        {
+                            send(fds[i].fd, "REMOVE", strlen("REMOVE"), 0);
+                        }
+                        else
+                        {
+                            send(fds[i].fd, "Invalid Command", 15, 0);
+                        }
+                    }
+                }
             }
         }
-        close(connfd);
     }
 
     return 0;
