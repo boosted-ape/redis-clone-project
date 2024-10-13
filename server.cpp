@@ -16,6 +16,8 @@
 #include <string>
 #include <iostream>
 #include <sstream>
+#include "ReaderThreadPool.hpp"
+#include "WriterThreadPool.hpp"
 
 using namespace std;
 
@@ -24,6 +26,8 @@ sem_t x, y;
 pthread_t writerthreads[100];
 pthread_t readerthreads[100];
 int readercount = 0;
+
+unordered_map<string, string> db;
 
 // Reader Function
 void *reader(void *param)
@@ -47,6 +51,51 @@ void *reader(void *param)
     pthread_exit(NULL);
 }
 
+std::string parseCommand(const std::string &command)
+{
+    std::istringstream iss(command);
+    std::string action;
+    iss >> action;
+
+    if (action == "GET")
+    {
+        std::string key;
+        if (iss >> key)
+        {
+            try
+            {
+                string result = db.at(key);
+                return result;
+            }
+            catch (const out_of_range &e)
+            {
+                cerr << "Exception at " << e.what() << endl;
+                return "Element is not in hash table";
+            }
+        }
+    }
+    else if (action == "SET")
+    {
+        std::string key, value;
+        if (iss >> key >> value)
+        {
+            db[key] = value;
+            return "SET key: " + key + " with value: " + value;
+        }
+    }
+    else if (action == "DEL")
+    {
+        std::string key;
+        if (iss >> key)
+        {
+            db.erase(key);
+            return "DEL key: " + key;
+        }
+    }
+
+    return "Error: Invalid command format.";
+}
+
 // Writer Function
 void *writer(void *param)
 {
@@ -58,17 +107,6 @@ void *writer(void *param)
     pthread_exit(NULL);
 }
 
-std::vector<std::string> tokenize(const std::string& str, char delimiter) {
-    std::vector<std::string> tokens;
-    std::stringstream ss(str);
-    std::string token;
-
-    while (std::getline(ss, token, delimiter)) {
-        tokens.push_back(token);
-    }
-
-    return tokens;
-}
 // Driver Code
 int main()
 {
@@ -134,6 +172,7 @@ int main()
                 {
                     // Handle data from client
                     string message;
+                    string response;
 
                     uint32_t rcvDataLength;
                     uint32_t dataLength;
@@ -166,13 +205,12 @@ int main()
 
                     // assign buffered data to a string
                     message.assign((char *)&(rcvBuf[0]), rcvBuf.size()); // string
+                    response = parseCommand(message);
 
-
-
-                    uint32_t sendDataLength = htonl(message.size());
+                    uint32_t sendDataLength = htonl(response.size());
                     // Send data to the socket
                     send(fds[i].fd, &sendDataLength, sizeof(uint32_t), 0);
-                    send(fds[i].fd, message.c_str(), message.size(), 0);
+                    send(fds[i].fd, response.c_str(), response.size(), 0);
                 }
             }
         }
